@@ -1,0 +1,30 @@
+{"namespace":"model.avro",
+"type":"record",
+"name":"TrajSegmentAvro",
+"fields":[
+    {"name":"points","type":{"type":"array","items":
+        { "type": "record",
+        "namespace": "model.avro",
+          "name": "TrajPointAvro",
+          "fields": [
+              {"name": "taxiId", "type": "string"},
+              {"name": "time","type":"string"},
+              {"name":"lon","type":"double" },
+              {"name":"lat","type":"double"},
+              {"name":"direction","type":"double"},
+              {"name":"speed","type":"double"},
+              {"name":"passenger","type":"int"},
+              {"name":"utc","type":"long"},
+              {"name":"cellID","type":"string"}
+              ]
+        }
+
+    }
+
+    },
+    {"name":"code","type":"string"},
+    {"name":"taxiID","type":"string"}
+
+]
+
+}
