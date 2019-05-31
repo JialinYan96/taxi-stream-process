@@ -22,13 +22,10 @@ import ch.hsr.geohash.GeoHash;
 import model.TrajPoint;
 import model.avro.TrajPointAvro;
 import model.avro.TrajSegmentAvro;
-import org.apache.commons.lang3.ObjectUtils;
 import org.apache.flink.api.common.functions.FilterFunction;
-import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.io.OutputFormat;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.java.functions.KeySelector;
-import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.filesystem.FsStateBackend;
@@ -47,7 +44,6 @@ import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.util.Bytes;
 
-import javax.lang.model.type.NullType;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -66,7 +62,7 @@ import java.util.Properties;
  * <p>If you change the name of the main class (with the public static void main(String[] args))
  * method, change the respective entry in the POM.xml file (simply search for 'mainClass').
  */
-public class TaxiDataFilterAndSink0529 {
+public class TaxiDataFilterAndSink0531 {
 	public static int MAX_DELAY_SECONDS=120;
 	public static int GEOHASH_PRECISION=8;
 	private static Admin admin;
