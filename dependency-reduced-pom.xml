@@ -112,7 +112,7 @@
               </filters>
               <transformers>
                 <transformer>
-                  <mainClass>process.TaxiDataFilterAndSink</mainClass>
+                  <mainClass>process.TaxiDataFilterAndSink0529</mainClass>
                 </transformer>
               </transformers>
             </configuration>

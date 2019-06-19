@@ -1,0 +1,10 @@
+{"namespace": "model.avro",
+ "type": "record",
+ "name": "SimplePointAvro",
+ "fields": [
+     {"name": "trajId", "type": "string"},
+     {"name":"lon","type":"double" },
+     {"name":"lat","type":"double"},
+     {"name":"utc","type":"long"}
+ ]
+}   

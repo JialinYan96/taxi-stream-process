@@ -1,6 +1,8 @@
 package process;
 
 import ch.hsr.geohash.GeoHash;
+import model.TrajPoint;
+import model.avro.SimplePointAvro;
 import model.avro.TrajPointAvro;
 import model.avro.TrajSegmentAvro;
 import org.apache.avro.io.BinaryEncoder;
@@ -55,7 +57,7 @@ public class Utils {
             trajPointAvro.setPassenger(Integer.valueOf(tokens[6]));
             trajPointAvro.setUtc(date2TimeStamp(tokens[1],"yyyy-MM-dd HH:mm:ss"));
             trajPointAvro.setCellID(GeoHash.withCharacterPrecision(trajPointAvro.getLat()
-                    ,trajPointAvro.getLon(),8).toBase32());
+                    ,trajPointAvro.getLon(),4).toBase32());
         }
         catch (Exception e)
         {
@@ -71,6 +73,42 @@ public class Utils {
         BinaryEncoder encoder=null;
         encoder=EncoderFactory.get().binaryEncoder(out,encoder);
         DatumWriter<TrajSegmentAvro>writer=new SpecificDatumWriter<>(record.getSchema());
+        try{
+            writer.write(record,encoder);
+            encoder.flush();
+            out.close();
+        }
+        catch (IOException e)
+        {
+            e.printStackTrace();
+        }
+        return out.toByteArray();
+    }
+
+    public static byte[]serializeSimplePoint(SimplePointAvro record)
+    {
+        ByteArrayOutputStream out=new ByteArrayOutputStream();
+        BinaryEncoder encoder=null;
+        encoder=EncoderFactory.get().binaryEncoder(out,encoder);
+        DatumWriter<SimplePointAvro>writer=new SpecificDatumWriter<>(record.getSchema());
+        try{
+            writer.write(record,encoder);
+            encoder.flush();
+            out.close();
+        }
+        catch (IOException e)
+        {
+            e.printStackTrace();
+        }
+        return out.toByteArray();
+    }
+
+    public static byte[]serializeTrajPoint(TrajPointAvro record)
+    {
+        ByteArrayOutputStream out=new ByteArrayOutputStream();
+        BinaryEncoder encoder=null;
+        encoder=EncoderFactory.get().binaryEncoder(out,encoder);
+        DatumWriter<TrajPointAvro>writer=new SpecificDatumWriter<>(record.getSchema());
         try{
             writer.write(record,encoder);
             encoder.flush();

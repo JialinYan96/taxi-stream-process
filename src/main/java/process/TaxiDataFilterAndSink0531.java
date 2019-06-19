@@ -20,13 +20,18 @@ package process;
 
 import ch.hsr.geohash.GeoHash;
 import model.TrajPoint;
+import model.avro.SimplePointAvro;
 import model.avro.TrajPointAvro;
 import model.avro.TrajSegmentAvro;
-import org.apache.flink.api.common.functions.FilterFunction;
+import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.common.io.OutputFormat;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.filesystem.FsStateBackend;
 import org.apache.flink.streaming.api.TimeCharacteristic;
@@ -37,17 +42,22 @@ import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrderness
 import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
+import org.apache.flink.streaming.connectors.elasticsearch.ElasticsearchSinkFunction;
+import org.apache.flink.streaming.connectors.elasticsearch.RequestIndexer;
+import org.apache.flink.streaming.connectors.elasticsearch2.ElasticsearchSink;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.util.Collector;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.elasticsearch.action.index.IndexRequest;
+import org.elasticsearch.client.Requests;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Properties;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.util.*;
 
 
 /**
@@ -70,7 +80,7 @@ public class TaxiDataFilterAndSink0531 {
 	private static Connection conn = null;
 
 	public static void main(String[] args) throws Exception {
-		initHBase();
+
 
 		// set up the streaming execution environment
 		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -102,21 +112,23 @@ public class TaxiDataFilterAndSink0531 {
 		DataStream<TrajPointAvro>trajPointStream=messageStream.map(x->Utils.string2TrajPointAvro(x));
 		DataStream<TrajPointAvro>filtered=trajPointStream.filter(new RangeFilter());
 
-		DataStream<TrajSegmentAvro> segments=filtered
-				.keyBy(new KeySelector<TrajPointAvro, Tuple2<String,String>>() {
-			@Override
-			public Tuple2<String, String> getKey(TrajPointAvro trajPointAvro) throws Exception {
-				return new Tuple2(String.valueOf(trajPointAvro.getCellID())
-						,String.valueOf(trajPointAvro.getTaxiId()));
-			}
-		})
-				.timeWindow(Time.minutes(30))
-				.process(new point2SegmentFunction());
-		segments.print();
-		segments.addSink(new HBaseSink());
+		//filtered.addSink(new trajPointHBaseSink());
+
+		//DataStream<Tuple2<String,SimplePointAvro>> simplepoints= filtered.map(new TrajPoint2SimplePoint());
+//        initHBase();
+//		simplepoints.addSink(new simplePointHBaseSink());
+		//simplepoints.print();
 
 
-		//filtered.writeUsingOutputFormat(new HBaseOutputFormat());
+		Map<String, String> config = new HashMap<>();
+		config.put("bulk.flush.max.actions", "1");   // flush inserts after every event
+		config.put("cluster.name", "elasticsearch"); // default cluster name
+
+		List<InetSocketAddress> transports = new ArrayList<>();
+// set default connection details
+		transports.add(new InetSocketAddress(InetAddress.getByName("localhost"), 9300));
+		filtered.keyBy(x->x.getTaxiId()).map(new StatusChange()).filter(x->x.f3!=0).addSink(new ElasticsearchSink<>(config,transports,new ChangePointsInserter()));
+		//simplepoints.addSink(new ElasticsearchSink<>(config,transports,new PointsInserter()));
 
 		// execute program
 		env.execute("Flink Streaming Java API Skeleton");
@@ -131,7 +143,7 @@ public class TaxiDataFilterAndSink0531 {
 			double lon=trajPoint.getLon();
 			double lat=trajPoint.getLat();
 			double speed=trajPoint.getSpeed();
-			if (lon >114.3509 && lon<114.3757 && lat>30.5184 && lat <114.3757)
+			if (lon >=113.8499 && lon<=114.8854 && lat>=30.3071 && lat <=30.8692)
 				return true;
 			else return false;
 //
@@ -152,124 +164,175 @@ public class TaxiDataFilterAndSink0531 {
 		}
 	}
 
-	public static class point2SegmentFunction extends ProcessWindowFunction<TrajPointAvro, TrajSegmentAvro, Tuple2<String, String>, TimeWindow>
+	public static class TrajPoint2SimplePoint implements MapFunction<TrajPointAvro,Tuple2<String,SimplePointAvro>>
 	{
 
 		@Override
-		public void process(Tuple2<String, String> key, Context context, Iterable<TrajPointAvro> iterable, Collector<TrajSegmentAvro> collector) throws Exception {
-			List<TrajPointAvro>points=new ArrayList<>();
-			for (TrajPointAvro point:iterable)
-			{
-				points.add(point);
-			}
-			TrajSegmentAvro segment=new TrajSegmentAvro();
+		public Tuple2<String,SimplePointAvro> map(TrajPointAvro trajPoint) throws Exception {
+			String rowkey=String.valueOf(trajPoint.getCellID())+Utils.timeStamp2Date(trajPoint.getUtc(),"yyyyMMddHHmm");
+			String TrajID= Utils.timeStamp2Date(trajPoint.getUtc(),"yyyyMMdd")+"-"+String.valueOf(trajPoint.getTaxiId());
+			return new Tuple2<String,SimplePointAvro>(rowkey,new SimplePointAvro(TrajID,trajPoint.getLon(),trajPoint.getLat(),trajPoint.getUtc()));
+		}
+	}
+	private static class myReduce implements ReduceFunction<Tuple2<String,SimplePointAvro>>
+	{
 
-			segment.setCode(Utils.timeStamp2Date(context.window().getStart(),"yyyyMMddHHmmss")+(key.f0));
-
-			segment.setTaxiID(key.f1);
-			segment.setPoints(points);
-			collector.collect(segment);
+		@Override
+		public Tuple2<String, SimplePointAvro> reduce(Tuple2<String, SimplePointAvro> t0, Tuple2<String, SimplePointAvro> t1) throws Exception {
+			return t0;
 		}
 	}
 
 
-	//other way to connect hbase
-	public static class HBaseSink extends RichSinkFunction<TrajSegmentAvro>
+	private static class assignRowkey extends ProcessWindowFunction<Tuple2<String,SimplePointAvro>,Tuple2<String,SimplePointAvro>,String,TimeWindow>
 	{
-		private Table table=null;
-		@Override
-		public void open(Configuration parameters) throws Exception {
-			try{
 
-				table = conn.getTable(TableName.valueOf("segmentTable"));
-			}
-			catch(Exception e)
-			{
-				e.printStackTrace();
-			}
+		@Override
+		public void process(String key, Context context, Iterable<Tuple2<String,SimplePointAvro>> iter, Collector<Tuple2<String, SimplePointAvro>> collector) throws Exception {
+			Tuple2<String,SimplePointAvro> pointWithCellID=iter.iterator().next();
+			String rowkey=pointWithCellID.f0 +Utils.timeStamp2Date(context.window().getStart(),"yyyyMMddHHmm");
+			collector.collect(new Tuple2<>(rowkey,pointWithCellID.f1));
+		}
+	}
+
+
+	private static class StatusChange extends RichMapFunction<TrajPointAvro, Tuple4<Long, Double, Double, Integer>>
+	{
+		private transient ValueState<Integer> status;
+
+		@Override
+		public Tuple4<Long, Double, Double, Integer> map(TrajPointAvro point) throws Exception {
+			int previous=status.value();
+			status.update(point.getPassenger());
+			return new Tuple4<>(point.getUtc(),point.getLat(),point.getLon(),point.getPassenger()-previous);
+
 		}
 
 		@Override
-		public void invoke(TrajSegmentAvro value, Context context) throws Exception {
-			Put put=new Put(Bytes.toBytes(String.valueOf(value.getCode())));
-			put.addColumn(Bytes.toBytes("segmentData")
-					,Bytes.toBytes(String.valueOf(value.getTaxiID()))
-					,Utils.serialize(value));
-			table.put(put);
+		public void open(Configuration parameters) throws Exception {
+			ValueStateDescriptor<Integer>descriptor=new ValueStateDescriptor<>("passengerStatus"
+					, Integer.TYPE
+					,0);
+			status=getRuntimeContext().getState(descriptor);
+		}
+	}
+
+	private static class PointsInserter implements ElasticsearchSinkFunction<Tuple2<String,SimplePointAvro>>
+	{
+
+		@Override
+		public void process(Tuple2<String, SimplePointAvro> record, RuntimeContext runtimeContext, RequestIndexer requestIndexer) {
+			Map<String,String> json=new HashMap<>();
+			json.put("time",String.valueOf(record.f1.getUtc()));
+			json.put("location",String.valueOf(record.f1.getLat())+","+String.valueOf(record.f1.getLon()));
+			IndexRequest rqst= Requests.indexRequest()
+					.index("taxi")
+					.type("points")
+					.source(json);
+			requestIndexer.add(rqst);
+		}
+	}
+
+	private static class ChangePointsInserter implements ElasticsearchSinkFunction<Tuple4<Long,Double,Double,Integer>>
+	{
+
+		@Override
+		public void process(Tuple4<Long,Double,Double,Integer>record, RuntimeContext runtimeContext, RequestIndexer requestIndexer) {
+			Map<String,String> json=new HashMap<>();
+			json.put("time",String.valueOf(record.f0));
+			json.put("location",String.valueOf(record.f1)+","+String.valueOf(record.f2));
+			IndexRequest rqst= Requests.indexRequest()
+					.index("taxi")
+					.type("points")
+					.source(json);
+			requestIndexer.add(rqst);
+		}
+	}
+
+
+	private static class simplePointHBaseSink extends RichSinkFunction<Tuple2<String,SimplePointAvro>>
+	{
+		private Table table=null;
+		private int cnt=0;
+		private int maxBufferCnt=5;
+		private List<Put> puts=null;
+
+		@Override
+		public void open(Configuration parameters) throws Exception {
+			table=conn.getTable(TableName.valueOf("simplePointTable"));
+			puts=new ArrayList<>();
+		}
+
+		@Override
+		public void invoke(Tuple2<String, SimplePointAvro> value, Context context) throws Exception {
+			Put put =new Put(Bytes.toBytes(value.f0));
+			SimplePointAvro point=value.f1;
+			put.addColumn(Bytes.toBytes("points")
+					,Bytes.toBytes( String.valueOf(point.getTrajId()).split("-")[1]+String.valueOf(point.getUtc()))
+					,Utils.serializeSimplePoint(point));
+			puts.add(put);
+			cnt++;
+			if (cnt>maxBufferCnt)
+			{
+				table.put(puts);
+				cnt=0;
+				puts.clear();
+			}
 		}
 
 		@Override
 		public void close() throws Exception {
-			if (conn != null) conn.close();
+			if (puts.size()>0)
+			{
+				table.put(puts);
+			}
+			puts=null;
+			table.close();
 		}
 	}
-	//one way to connect hbase在这个代码里没用这一种
-	public static class HBaseOutputFormat implements OutputFormat<TrajPoint>
+	public static class trajPointHBaseSink extends RichSinkFunction<TrajPointAvro>
 	{
-
-		private BufferedMutator mutator =null;
-		private int count=0;
-
+		private Table table=null;
+		private int cnt=0;
+		private int maxBufferCnt=5;
+		private List<Put> puts=null;
 
 		@Override
-		public void configure(Configuration configuration) {
+		public void open(Configuration parameters) throws Exception {
+			table=conn.getTable(TableName.valueOf("dailyTrajTable"));
+			puts=new ArrayList<>();
 		}
 
-		@Override
-		public void open(int i, int i1) throws IOException {
-
-
-			initHBase();
-			TableName tableName=TableName.valueOf("taxiTable");
-
-			BufferedMutatorParams params=new BufferedMutatorParams(tableName);
-			params.writeBufferSize(1024*1024);
-			mutator=conn.getBufferedMutator(params);
-			count=0;
-		}
 
 		@Override
-		public void writeRecord(TrajPoint trajPoint) throws IOException {
-
-			String cell=GeoHash.withCharacterPrecision(trajPoint.getLat(),trajPoint.getLon(),GEOHASH_PRECISION).toBase32();
-			//String date=Utils.timeStamp2Date(trajPoint.getUtc(),null);
-			Put put=new Put(Bytes.toBytes(cell+String.valueOf(trajPoint.getUtc())));
-			put.addColumn(Bytes.toBytes("taxiData")
-					,Bytes.toBytes(trajPoint.getTaxiId())
-					,trajPoint.getUtc()
-					,Bytes.toBytes(trajPoint.toString()));
-
-
-			mutator.mutate(put);
-			if (count>4)
+		public void invoke(TrajPointAvro value, Context context) throws Exception {
+			String rowkey=Utils.timeStamp2Date(value.getUtc(),"yyyyMMdd")+"-"
+					+String.valueOf(value.getTaxiId());
+			Put put=new Put(Bytes.toBytes(rowkey));
+			put.addColumn(Bytes.toBytes("points")
+					,Bytes.toBytes(value.getUtc())
+					,Utils.serializeTrajPoint(value));
+			puts.add(put);
+			cnt++;
+			if (cnt>maxBufferCnt)
 			{
-				mutator.flush();
-				count=0;
-			}
-			count++;
-
-		}
-
-		@Override
-		public void close() throws IOException {
-			System.out.println("close");
-			try
-			{
-				if (conn!=null) {
-					conn.close();
-					admin.close();
-				}
-			}
-			catch (Exception e)
-			{
-				e.printStackTrace();
+				table.put(puts);
+				puts.clear();
+				cnt=0;
 			}
 		}
 
-
-
-
+		@Override
+		public void close() throws Exception {
+			if (puts.size()>0)
+			{
+				table.put(puts);
+			}
+			puts=null;
+			table.close();
+		}
 	}
+
 
 	public static void initHBase()
 	{
